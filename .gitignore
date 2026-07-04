@@ -1,0 +1,8 @@
+.env
+
+cache/
+out/
+broadcast/
+snapshots/
+
+dependencies/

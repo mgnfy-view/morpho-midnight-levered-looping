@@ -1,0 +1,53 @@
+name: Build and Test
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'script/**'
+      - 'foundry.toml'
+      - 'remappings.txt'
+      - 'soldeer.lock'
+      - 'Makefile'
+      - '.github/workflows/build-and-test.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'script/**'
+      - 'foundry.toml'
+      - 'remappings.txt'
+      - 'soldeer.lock'
+      - 'Makefile'
+      - '.github/workflows/build-and-test.yml'
+  workflow_dispatch:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: true
+
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install dependencies
+        run: |
+          make install
+
+      - name: Run Forge build
+        run: |
+          forge --version
+          make fbuild
+
+      - name: Run Forge tests
+        run: |
+          make ftest
