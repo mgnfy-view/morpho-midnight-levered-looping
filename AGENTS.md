@@ -64,7 +64,8 @@ Group imports in this order when practical:
 - Storage variables: `s_` prefix, for example `s_totalDebt`.
 - Immutable variables: `i_` prefix, for example `i_asset`.
 - Constants: `UPPER_SNAKE_CASE`.
-- Custom errors: `ContractName__Reason`, for example `PositionManager__AddressZero`.
+- Custom errors: `ContractName__Reason`, for example `PositionManager__AddressZero`. Errors declared in an interface
+  for a specific implementation must still use the implementation contract name prefix, not the interface name.
 - Events: past-tense or state-change names, for example `PositionOpened` or `FeeRecipientSet`.
 
 ## Interfaces
@@ -77,7 +78,12 @@ Always put ABI declarations in interfaces:
 - Events.
 - External and public function signatures.
 
-Implementation contracts should import and implement interfaces instead of redeclaring ABI declarations locally. Local implementation-only structs are allowed only for internal execution caches that are not part of the ABI, event/error surface, or integration contract.
+Implementation contracts should import and implement interfaces instead of redeclaring ABI declarations locally. Local
+implementation-only structs are allowed only for internal execution caches that are not part of the ABI, event/error
+surface, or integration contract.
+
+Callback contracts are not exempt from this rule. Put callback calldata structs, callback/admin events, custom errors,
+and external/public function signatures in a dedicated interface under `src/interfaces/`.
 
 ## Contract Structure
 
@@ -93,7 +99,11 @@ Prefer this order in implementation contracts:
 8. External and public view functions.
 9. Internal and private functions.
 
-For upgradeable or storage-split contracts, keep shared storage in a dedicated abstract storage contract. Preserve storage layout carefully and document any layout change.
+Callback entry points that perform transfers, approvals, swaps, or protocol calls are state-changing functions and
+belong before public view getters.
+
+For upgradeable or storage-split contracts, keep shared storage in a dedicated abstract storage contract. Preserve
+storage layout carefully and document any layout change.
 
 ## NatSpec
 
@@ -104,7 +114,8 @@ Use NatSpec on contracts, interfaces, events, errors with non-obvious parameters
 - Use `@dev` for security assumptions, call ordering, and integration constraints.
 - Use `@param` and `@return` for external and public functions.
 
-Keep NatSpec factual. Do not describe implementation details that can drift unless they are part of the external contract.
+Keep NatSpec factual. Do not describe implementation details that can drift unless they are part of the external
+contract.
 
 ## Validation
 
@@ -128,7 +139,8 @@ Always consider:
 - Direct `msg.sender` checks versus delegated or meta-transaction caller semantics.
 - Paused state, emergency paths, and privileged role abuse.
 
-Use `SafeERC20` for token transfers unless a dependency forces a different pattern. Avoid infinite approvals unless they are justified and bounded by trusted integration assumptions.
+Use `SafeERC20` for token transfers unless a dependency forces a different pattern. Avoid infinite approvals unless they
+are justified and bounded by trusted integration assumptions.
 
 ## Tests
 
