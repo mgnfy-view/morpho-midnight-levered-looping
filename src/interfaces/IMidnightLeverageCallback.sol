@@ -95,12 +95,16 @@ interface IMidnightLeverageCallback is ISellCallback, IRepayCallback {
 
     /// @notice Builds the Permit2 margin-pull permit and witness data for an open callback.
     /// @param _loanToken The loan token pulled from the borrower.
+    /// @param _marketId The Midnight market id to bind into the witness.
+    /// @param _collateralToken The collateral token to bind into the witness.
     /// @param _params Open callback parameters to bind into the witness.
     /// @return Permit2 transfer permit that should be signed by the borrower.
     /// @return Witness hash bound to `_params`.
     /// @return Permit2 witness type string.
     function buildMarginPermitData(
         address _loanToken,
+        bytes32 _marketId,
+        address _collateralToken,
         OpenParams calldata _params
     )
         external
@@ -109,12 +113,16 @@ interface IMidnightLeverageCallback is ISellCallback, IRepayCallback {
 
     /// @notice Builds the Permit2 shortfall-pull permit and witness data for a close callback.
     /// @param _loanToken The loan token pulled from the borrower if swaps produce a shortfall.
+    /// @param _marketId The Midnight market id to bind into the witness.
+    /// @param _collateralToken The collateral token to bind into the witness.
     /// @param _params Close callback parameters to bind into the witness.
     /// @return Permit2 transfer permit that should be signed by the borrower.
     /// @return Witness hash bound to `_params`.
     /// @return Permit2 witness type string.
     function buildRepayPermitData(
         address _loanToken,
+        bytes32 _marketId,
+        address _collateralToken,
         CloseParams calldata _params
     )
         external

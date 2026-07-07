@@ -14,28 +14,28 @@ import { ISignatureTransfer } from "permit2-1.0.0/src/interfaces/ISignatureTrans
 import { Market } from "morpho-midnight-1.0.0/src/interfaces/IMidnight.sol";
 import { CALLBACK_SUCCESS } from "morpho-midnight-1.0.0/src/libraries/ConstantsLib.sol";
 
-/// @title MidnightLeverageCallback
-/// @author mgnfy-view
+/// @title MidnightLeverageCallback.
+/// @author mgnfy-view.
 /// @notice Callback contract for borrower-directed atomic leverage opens and closes on Morpho Midnight.
 /// @dev Each callback handles exactly one collateral index. Multi-collateral positions use multiple calls.
 contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, ReentrancyGuard {
     /// @dev EIP-712 typehash for the Permit2 witness used by open-side margin pulls.
     bytes32 internal constant MARGIN_WITNESS_TYPEHASH = keccak256(
-        "MarginWitness(uint256 collateralIndex,uint256 minCollateralAssets,address swapRouter,bytes32 swapCalldataHash)"
+        "MarginWitness(bytes32 marketId,address collateralToken,uint256 minCollateralAssets,address swapRouter,bytes32 swapCalldataHash)"
     );
 
     /// @dev Permit2 witness type string for open-side margin-pull signatures.
     string internal constant MARGIN_WITNESS_TYPE_STRING =
-        "MarginWitness witness)MarginWitness(uint256 collateralIndex,uint256 minCollateralAssets,address swapRouter,bytes32 swapCalldataHash)TokenPermissions(address token,uint256 amount)";
+        "MarginWitness witness)MarginWitness(bytes32 marketId,address collateralToken,uint256 minCollateralAssets,address swapRouter,bytes32 swapCalldataHash)TokenPermissions(address token,uint256 amount)";
 
     /// @dev EIP-712 typehash for the Permit2 witness used by close-side shortfall pulls.
     bytes32 internal constant REPAY_WITNESS_TYPEHASH = keccak256(
-        "RepayWitness(uint256 collateralIndex,uint256 collateralAmount,uint256 minLoanAssets,address swapRouter,bytes32 swapCalldataHash)"
+        "RepayWitness(bytes32 marketId,uint256 collateralIndex,address collateralToken,uint256 collateralAmount,uint256 minLoanAssets,address swapRouter,bytes32 swapCalldataHash)"
     );
 
     /// @dev Permit2 witness type string for close-side shortfall-pull signatures.
     string internal constant REPAY_WITNESS_TYPE_STRING =
-        "RepayWitness witness)RepayWitness(uint256 collateralIndex,uint256 collateralAmount,uint256 minLoanAssets,address swapRouter,bytes32 swapCalldataHash)TokenPermissions(address token,uint256 amount)";
+        "RepayWitness witness)RepayWitness(bytes32 marketId,uint256 collateralIndex,address collateralToken,uint256 collateralAmount,uint256 minLoanAssets,address swapRouter,bytes32 swapCalldataHash)TokenPermissions(address token,uint256 amount)";
 
     /// @dev The Midnight instance this callback accepts calls from.
     IMidnight internal immutable i_midnight;
@@ -70,6 +70,7 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
 
     /// @notice Opens one leveraged collateral leg after Midnight transfers borrowed loan assets to this callback.
     /// @dev Callable only by the configured Midnight instance.
+    /// @param _id Midnight market id bound into the Permit2 witness.
     /// @param _market Midnight market where the borrower is opening leverage.
     /// @param _sellerAssets Loan-token amount borrowed by the seller and sent to this callback.
     /// @param _seller Borrower whose debt is increased and whose collateral will be supplied.
@@ -77,7 +78,7 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
     /// @param _data ABI-encoded `OpenParams`.
     /// @return The Midnight callback success selector.
     function onSell(
-        bytes32,
+        bytes32 _id,
         Market memory _market,
         uint256 _sellerAssets,
         uint256,
@@ -97,7 +98,7 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
 
         IERC20 loanToken = IERC20(_market.loanToken);
         address collateralToken = _market.collateralParams[params.collateralIndex].token;
-        bytes32 marginWitness = _hashMarginWitness(params);
+        bytes32 marginWitness = _hashMarginWitness(_id, collateralToken, params);
         _pullWithAuthorization(
             loanToken,
             _seller,
@@ -125,13 +126,14 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
 
     /// @notice Closes or reduces one leveraged collateral leg during a Midnight repayment callback.
     /// @dev Callable only by the configured Midnight instance.
+    /// @param _id Midnight market id bound into the Permit2 witness.
     /// @param _market Midnight market where the borrower is repaying debt.
     /// @param _units Debt units being repaid by Midnight after this callback returns.
     /// @param _onBehalf Borrower whose debt was reduced before the callback and whose collateral is withdrawn.
     /// @param _data ABI-encoded `CloseParams`.
     /// @return The Midnight callback success selector.
     function onRepay(
-        bytes32,
+        bytes32 _id,
         Market memory _market,
         uint256 _units,
         address _onBehalf,
@@ -162,7 +164,7 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
         if (loanBalance < _units) {
             uint256 shortfall = _units - loanBalance;
             if (shortfall > params.maxRepayShortfall) revert MidnightLeverageCallback__ShortfallExceedsCap();
-            bytes32 repayWitness = _hashRepayWitness(params);
+            bytes32 repayWitness = _hashRepayWitness(_id, collateralToken, params);
             _pullWithAuthorization(
                 loanToken,
                 _onBehalf,
@@ -237,13 +239,24 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
     }
 
     /// @dev Hashes open-side fields bound to a Permit2 margin-pull signature.
+    /// @param _marketId The Midnight market id to bind into the witness.
+    /// @param _collateralToken The collateral token to bind into the witness.
     /// @param _params Open callback parameters to bind into the witness.
     /// @return The hashed Permit2 witness.
-    function _hashMarginWitness(OpenParams memory _params) internal pure returns (bytes32) {
+    function _hashMarginWitness(
+        bytes32 _marketId,
+        address _collateralToken,
+        OpenParams memory _params
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
         return keccak256(
             abi.encode(
                 MARGIN_WITNESS_TYPEHASH,
-                _params.collateralIndex,
+                _marketId,
+                _collateralToken,
                 _params.minCollateralAssets,
                 _params.swapRouter,
                 keccak256(_params.swapCalldata)
@@ -252,13 +265,25 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
     }
 
     /// @dev Hashes close-side fields bound to a Permit2 shortfall-pull signature.
+    /// @param _marketId The Midnight market id to bind into the witness.
+    /// @param _collateralToken The collateral token to bind into the witness.
     /// @param _params Close callback parameters to bind into the witness.
     /// @return The hashed Permit2 witness.
-    function _hashRepayWitness(CloseParams memory _params) internal pure returns (bytes32) {
+    function _hashRepayWitness(
+        bytes32 _marketId,
+        address _collateralToken,
+        CloseParams memory _params
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
         return keccak256(
             abi.encode(
                 REPAY_WITNESS_TYPEHASH,
+                _marketId,
                 _params.collateralIndex,
+                _collateralToken,
                 _params.collateralAmount,
                 _params.minLoanAssets,
                 _params.swapRouter,
@@ -326,12 +351,16 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
 
     /// @notice Builds the Permit2 margin-pull permit and witness data for an open callback.
     /// @param _loanToken The loan token pulled from the borrower.
+    /// @param _marketId The Midnight market id to bind into the witness.
+    /// @param _collateralToken The collateral token to bind into the witness.
     /// @param _params Open callback parameters to bind into the witness.
     /// @return Permit2 transfer permit that should be signed by the borrower.
     /// @return Witness hash bound to `_params`.
     /// @return Permit2 witness type string.
     function buildMarginPermitData(
         address _loanToken,
+        bytes32 _marketId,
+        address _collateralToken,
         OpenParams calldata _params
     )
         external
@@ -340,19 +369,23 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
     {
         return (
             _buildPermit(_loanToken, _params.marginAmount, _params.auth.nonce, _params.auth.deadline),
-            _hashMarginWitness(_params),
+            _hashMarginWitness(_marketId, _collateralToken, _params),
             MARGIN_WITNESS_TYPE_STRING
         );
     }
 
     /// @notice Builds the Permit2 shortfall-pull permit and witness data for a close callback.
     /// @param _loanToken The loan token pulled from the borrower if swaps produce a shortfall.
+    /// @param _marketId The Midnight market id to bind into the witness.
+    /// @param _collateralToken The collateral token to bind into the witness.
     /// @param _params Close callback parameters to bind into the witness.
     /// @return Permit2 transfer permit that should be signed by the borrower.
     /// @return Witness hash bound to `_params`.
     /// @return Permit2 witness type string.
     function buildRepayPermitData(
         address _loanToken,
+        bytes32 _marketId,
+        address _collateralToken,
         CloseParams calldata _params
     )
         external
@@ -361,7 +394,7 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
     {
         return (
             _buildPermit(_loanToken, _params.maxRepayShortfall, _params.auth.nonce, _params.auth.deadline),
-            _hashRepayWitness(_params),
+            _hashRepayWitness(_marketId, _collateralToken, _params),
             REPAY_WITNESS_TYPE_STRING
         );
     }
