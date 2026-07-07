@@ -3,11 +3,24 @@ pragma solidity ^0.8.20;
 
 import { IRepayCallback, ISellCallback } from "morpho-midnight-1.0.0/src/interfaces/ICallbacks.sol";
 import { IMidnight } from "morpho-midnight-1.0.0/src/interfaces/IMidnight.sol";
+import { ISignatureTransfer } from "permit2-1.0.0/src/interfaces/ISignatureTransfer.sol";
 
-/// @title IMidnightLeverageCallback.
-/// @author mgnfy-view.
+/// @title IMidnightLeverageCallback
+/// @author mgnfy-view
 /// @notice Interface for borrower-directed atomic leverage opens and closes on Morpho Midnight.
 interface IMidnightLeverageCallback is ISellCallback, IRepayCallback {
+    /// @notice Signature-based pull authorization shared by open and close flows.
+    /// @dev An empty `signature` signals the fallback path: a plain `transferFrom` against a standing ERC-20
+    /// allowance instead of a Permit2 witness transfer.
+    struct PullAuthorization {
+        /// @notice Permit2 unordered nonce chosen off-chain by the signer. Unused when `signature` is empty.
+        uint256 nonce;
+        /// @notice Unix timestamp after which the permit signature is no longer valid. Unused when `signature` is empty.
+        uint256 deadline;
+        /// @notice EIP-712 signature over the Permit2 witness transfer. Empty bytes falls back to a plain pull.
+        bytes signature;
+    }
+
     /// @notice Parameters for opening one leveraged collateral leg through `take()`.
     struct OpenParams {
         /// @notice Loan-token amount pulled from the borrower in addition to the borrowed seller assets.
@@ -20,6 +33,8 @@ interface IMidnightLeverageCallback is ISellCallback, IRepayCallback {
         bytes swapCalldata;
         /// @notice Minimum collateral-token balance delta required from the swap.
         uint256 minCollateralAssets;
+        /// @notice Authorization for pulling `marginAmount` from the borrower.
+        PullAuthorization auth;
     }
 
     /// @notice Parameters for closing one leveraged collateral leg through `repay()`.
@@ -36,6 +51,8 @@ interface IMidnightLeverageCallback is ISellCallback, IRepayCallback {
         uint256 minLoanAssets;
         /// @notice Maximum loan-token shortfall that may be pulled from the borrower after the swap.
         uint256 maxRepayShortfall;
+        /// @notice Authorization for pulling the loan-token shortfall from the borrower.
+        PullAuthorization auth;
     }
 
     /// @notice Emitted when the owner changes a swap router's allowlist status.
@@ -58,8 +75,49 @@ interface IMidnightLeverageCallback is ISellCallback, IRepayCallback {
     /// @notice Reverts when a callback attempts to use a router that is not allowlisted.
     error MidnightLeverageCallback__SwapRouterNotAllowed();
 
+    /// @notice Sets whether a router may be used as a swap target.
+    /// @param _router The swap router address to configure.
+    /// @param _allowed Whether `_router` is allowed for swaps.
     function setIsAllowedSwapRouter(address _router, bool _allowed) external;
 
+    /// @notice Returns the Midnight instance this callback accepts calls from.
+    /// @return The configured Midnight instance.
     function getMidnight() external view returns (IMidnight);
+
+    /// @notice Returns the Permit2 instance used for signature-based token pulls.
+    /// @return The configured Permit2 instance.
+    function getPermit2() external view returns (ISignatureTransfer);
+
+    /// @notice Returns whether `_router` is allowed for callback swaps.
+    /// @param _router The swap router to check.
+    /// @return Whether `_router` is allowlisted.
     function isAllowedSwapRouter(address _router) external view returns (bool);
+
+    /// @notice Builds the Permit2 margin-pull permit and witness data for an open callback.
+    /// @param _loanToken The loan token pulled from the borrower.
+    /// @param _params Open callback parameters to bind into the witness.
+    /// @return Permit2 transfer permit that should be signed by the borrower.
+    /// @return Witness hash bound to `_params`.
+    /// @return Permit2 witness type string.
+    function buildMarginPermitData(
+        address _loanToken,
+        OpenParams calldata _params
+    )
+        external
+        pure
+        returns (ISignatureTransfer.PermitTransferFrom memory, bytes32, string memory);
+
+    /// @notice Builds the Permit2 shortfall-pull permit and witness data for a close callback.
+    /// @param _loanToken The loan token pulled from the borrower if swaps produce a shortfall.
+    /// @param _params Close callback parameters to bind into the witness.
+    /// @return Permit2 transfer permit that should be signed by the borrower.
+    /// @return Witness hash bound to `_params`.
+    /// @return Permit2 witness type string.
+    function buildRepayPermitData(
+        address _loanToken,
+        CloseParams calldata _params
+    )
+        external
+        pure
+        returns (ISignatureTransfer.PermitTransferFrom memory, bytes32, string memory);
 }

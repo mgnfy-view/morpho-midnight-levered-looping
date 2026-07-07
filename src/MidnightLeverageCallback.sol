@@ -9,27 +9,53 @@ import { Ownable } from "@openzeppelin-contracts-5.3.0/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin-contracts-5.3.0/access/Ownable2Step.sol";
 import { SafeERC20 } from "@openzeppelin-contracts-5.3.0/token/ERC20/utils/SafeERC20.sol";
 import { ReentrancyGuard } from "@openzeppelin-contracts-5.3.0/utils/ReentrancyGuard.sol";
+import { ISignatureTransfer } from "permit2-1.0.0/src/interfaces/ISignatureTransfer.sol";
 
 import { Market } from "morpho-midnight-1.0.0/src/interfaces/IMidnight.sol";
 import { CALLBACK_SUCCESS } from "morpho-midnight-1.0.0/src/libraries/ConstantsLib.sol";
 
-/// @title MidnightLeverageCallback.
-/// @author mgnfy-view.
+/// @title MidnightLeverageCallback
+/// @author mgnfy-view
 /// @notice Callback contract for borrower-directed atomic leverage opens and closes on Morpho Midnight.
 /// @dev Each callback handles exactly one collateral index. Multi-collateral positions use multiple calls.
 contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, ReentrancyGuard {
+    /// @dev EIP-712 typehash for the Permit2 witness used by open-side margin pulls.
+    bytes32 internal constant MARGIN_WITNESS_TYPEHASH = keccak256(
+        "MarginWitness(uint256 collateralIndex,uint256 minCollateralAssets,address swapRouter,bytes32 swapCalldataHash)"
+    );
+
+    /// @dev Permit2 witness type string for open-side margin-pull signatures.
+    string internal constant MARGIN_WITNESS_TYPE_STRING =
+        "MarginWitness witness)MarginWitness(uint256 collateralIndex,uint256 minCollateralAssets,address swapRouter,bytes32 swapCalldataHash)TokenPermissions(address token,uint256 amount)";
+
+    /// @dev EIP-712 typehash for the Permit2 witness used by close-side shortfall pulls.
+    bytes32 internal constant REPAY_WITNESS_TYPEHASH = keccak256(
+        "RepayWitness(uint256 collateralIndex,uint256 collateralAmount,uint256 minLoanAssets,address swapRouter,bytes32 swapCalldataHash)"
+    );
+
+    /// @dev Permit2 witness type string for close-side shortfall-pull signatures.
+    string internal constant REPAY_WITNESS_TYPE_STRING =
+        "RepayWitness witness)RepayWitness(uint256 collateralIndex,uint256 collateralAmount,uint256 minLoanAssets,address swapRouter,bytes32 swapCalldataHash)TokenPermissions(address token,uint256 amount)";
+
     /// @dev The Midnight instance this callback accepts calls from.
     IMidnight internal immutable i_midnight;
+
+    /// @dev The canonical Permit2 instance used for signature-based token pulls.
+    ISignatureTransfer internal immutable i_permit2;
 
     /// @dev Whether a swap router is allowed for callback swaps.
     mapping(address router => bool allowed) internal s_isAllowedSwapRouter;
 
     /// @notice Constructs the leverage callback.
     /// @param _midnight The Midnight instance allowed to call callback entry points.
+    /// @param _permit2 The canonical Permit2 instance used for signature-based token pulls.
     /// @param _initialOwner The owner that can manage the swap router allowlist.
-    constructor(IMidnight _midnight, address _initialOwner) Ownable(_initialOwner) {
-        if (address(_midnight) == address(0)) revert MidnightLeverageCallback__AddressZero();
+    constructor(IMidnight _midnight, ISignatureTransfer _permit2, address _initialOwner) Ownable(_initialOwner) {
+        if (address(_midnight) == address(0) || address(_permit2) == address(0)) {
+            revert MidnightLeverageCallback__AddressZero();
+        }
         i_midnight = _midnight;
+        i_permit2 = _permit2;
     }
 
     /// @notice Sets whether an address may be used as a swap target.
@@ -71,9 +97,16 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
 
         IERC20 loanToken = IERC20(_market.loanToken);
         address collateralToken = _market.collateralParams[params.collateralIndex].token;
-        if (params.marginAmount > 0) {
-            SafeERC20.safeTransferFrom(loanToken, _seller, address(this), params.marginAmount);
-        }
+        bytes32 marginWitness = _hashMarginWitness(params);
+        _pullWithAuthorization(
+            loanToken,
+            _seller,
+            params.marginAmount,
+            params.marginAmount,
+            params.auth,
+            marginWitness,
+            MARGIN_WITNESS_TYPE_STRING
+        );
         uint256 amountIn = _sellerAssets + params.marginAmount;
         uint256 collateralAssets = _swap(
             _market.loanToken,
@@ -129,7 +162,16 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
         if (loanBalance < _units) {
             uint256 shortfall = _units - loanBalance;
             if (shortfall > params.maxRepayShortfall) revert MidnightLeverageCallback__ShortfallExceedsCap();
-            SafeERC20.safeTransferFrom(loanToken, _onBehalf, address(this), shortfall);
+            bytes32 repayWitness = _hashRepayWitness(params);
+            _pullWithAuthorization(
+                loanToken,
+                _onBehalf,
+                params.maxRepayShortfall,
+                shortfall,
+                params.auth,
+                repayWitness,
+                REPAY_WITNESS_TYPE_STRING
+            );
         } else if (loanBalance > _units) {
             SafeERC20.safeTransfer(loanToken, _onBehalf, loanBalance - _units);
         }
@@ -139,7 +181,100 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
         return CALLBACK_SUCCESS;
     }
 
+    /// @dev Pulls tokens through Permit2 witness transfer or, with an empty signature, `transferFrom`.
+    /// @param _token The ERC-20 token to pull.
+    /// @param _from The token owner authorizing the pull.
+    /// @param _permittedAmount The maximum amount authorized by Permit2.
+    /// @param _requestedAmount The amount requested for this pull.
+    /// @param _auth Permit2 authorization data or empty-signature fallback marker.
+    /// @param _witness The Permit2 witness hash bound to the callback parameters.
+    /// @param _witnessTypeString The Permit2 witness type string matching `_witness`.
+    function _pullWithAuthorization(
+        IERC20 _token,
+        address _from,
+        uint256 _permittedAmount,
+        uint256 _requestedAmount,
+        PullAuthorization memory _auth,
+        bytes32 _witness,
+        string memory _witnessTypeString
+    )
+        internal
+    {
+        if (_requestedAmount == 0) return;
+        if (_auth.signature.length == 0) {
+            SafeERC20.safeTransferFrom(_token, _from, address(this), _requestedAmount);
+            return;
+        }
+
+        ISignatureTransfer.PermitTransferFrom memory permit =
+            _buildPermit(address(_token), _permittedAmount, _auth.nonce, _auth.deadline);
+        ISignatureTransfer.SignatureTransferDetails memory details =
+            ISignatureTransfer.SignatureTransferDetails({ to: address(this), requestedAmount: _requestedAmount });
+        i_permit2.permitWitnessTransferFrom(permit, details, _from, _witness, _witnessTypeString, _auth.signature);
+    }
+
+    /// @dev Builds the Permit2 permit for a signature-transfer pull.
+    /// @param _token The token address permitted for transfer.
+    /// @param _amount The maximum amount permitted for transfer.
+    /// @param _nonce The Permit2 unordered nonce.
+    /// @param _deadline The timestamp after which the permit expires.
+    /// @return The Permit2 transfer permit.
+    function _buildPermit(
+        address _token,
+        uint256 _amount,
+        uint256 _nonce,
+        uint256 _deadline
+    )
+        internal
+        pure
+        returns (ISignatureTransfer.PermitTransferFrom memory)
+    {
+        return ISignatureTransfer.PermitTransferFrom({
+            permitted: ISignatureTransfer.TokenPermissions({ token: _token, amount: _amount }),
+            nonce: _nonce,
+            deadline: _deadline
+        });
+    }
+
+    /// @dev Hashes open-side fields bound to a Permit2 margin-pull signature.
+    /// @param _params Open callback parameters to bind into the witness.
+    /// @return The hashed Permit2 witness.
+    function _hashMarginWitness(OpenParams memory _params) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                MARGIN_WITNESS_TYPEHASH,
+                _params.collateralIndex,
+                _params.minCollateralAssets,
+                _params.swapRouter,
+                keccak256(_params.swapCalldata)
+            )
+        );
+    }
+
+    /// @dev Hashes close-side fields bound to a Permit2 shortfall-pull signature.
+    /// @param _params Close callback parameters to bind into the witness.
+    /// @return The hashed Permit2 witness.
+    function _hashRepayWitness(CloseParams memory _params) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                REPAY_WITNESS_TYPEHASH,
+                _params.collateralIndex,
+                _params.collateralAmount,
+                _params.minLoanAssets,
+                _params.swapRouter,
+                keccak256(_params.swapCalldata)
+            )
+        );
+    }
+
     /// @dev Executes an allowlisted router call and returns the measured `_tokenOut` balance delta.
+    /// @param _tokenIn The token approved to and spent by `_router`.
+    /// @param _tokenOut The token expected from the swap.
+    /// @param _amountIn The exact input amount approved to `_router`.
+    /// @param _minAmountOut The minimum acceptable `_tokenOut` balance delta.
+    /// @param _router The swap router to call.
+    /// @param _swapCalldata The calldata passed to `_router`.
+    /// @return The measured `_tokenOut` balance delta.
     function _swap(
         address _tokenIn,
         address _tokenOut,
@@ -163,6 +298,8 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
     }
 
     /// @dev Sends the entire token balance held by this contract to `_borrower`.
+    /// @param _token The token to refund.
+    /// @param _borrower The refund recipient.
     function _refundBalance(IERC20 _token, address _borrower) internal {
         uint256 balance = _token.balanceOf(address(this));
         if (balance > 0) SafeERC20.safeTransfer(_token, _borrower, balance);
@@ -174,10 +311,58 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
         return i_midnight;
     }
 
+    /// @notice Returns the Permit2 instance used for signature-based token pulls.
+    /// @return The configured Permit2 instance.
+    function getPermit2() external view returns (ISignatureTransfer) {
+        return i_permit2;
+    }
+
     /// @notice Returns whether `_router` is allowed for callback swaps.
     /// @param _router The swap router to check.
     /// @return Whether `_router` is allowlisted.
     function isAllowedSwapRouter(address _router) external view returns (bool) {
         return s_isAllowedSwapRouter[_router];
+    }
+
+    /// @notice Builds the Permit2 margin-pull permit and witness data for an open callback.
+    /// @param _loanToken The loan token pulled from the borrower.
+    /// @param _params Open callback parameters to bind into the witness.
+    /// @return Permit2 transfer permit that should be signed by the borrower.
+    /// @return Witness hash bound to `_params`.
+    /// @return Permit2 witness type string.
+    function buildMarginPermitData(
+        address _loanToken,
+        OpenParams calldata _params
+    )
+        external
+        pure
+        returns (ISignatureTransfer.PermitTransferFrom memory, bytes32, string memory)
+    {
+        return (
+            _buildPermit(_loanToken, _params.marginAmount, _params.auth.nonce, _params.auth.deadline),
+            _hashMarginWitness(_params),
+            MARGIN_WITNESS_TYPE_STRING
+        );
+    }
+
+    /// @notice Builds the Permit2 shortfall-pull permit and witness data for a close callback.
+    /// @param _loanToken The loan token pulled from the borrower if swaps produce a shortfall.
+    /// @param _params Close callback parameters to bind into the witness.
+    /// @return Permit2 transfer permit that should be signed by the borrower.
+    /// @return Witness hash bound to `_params`.
+    /// @return Permit2 witness type string.
+    function buildRepayPermitData(
+        address _loanToken,
+        CloseParams calldata _params
+    )
+        external
+        pure
+        returns (ISignatureTransfer.PermitTransferFrom memory, bytes32, string memory)
+    {
+        return (
+            _buildPermit(_loanToken, _params.maxRepayShortfall, _params.auth.nonce, _params.auth.deadline),
+            _hashRepayWitness(_params),
+            REPAY_WITNESS_TYPE_STRING
+        );
     }
 }
