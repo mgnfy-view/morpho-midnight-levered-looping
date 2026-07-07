@@ -38,6 +38,7 @@ Follow `foundry.toml`.
 - Run `forge fmt` to sort imports and apply configured formatting.
 - Use explicit integer types: `uint256`, `uint16`, `int256`. Do not use `uint` or `int`.
 - Use explicit import lists.
+- Do not use named return parameters.
 
 ```solidity
 import { SafeERC20 } from "@openzeppelin-contracts-5.4.0/token/ERC20/utils/SafeERC20.sol";
@@ -70,7 +71,7 @@ Group imports in this order when practical:
 
 ## Interfaces
 
-Always put ABI declarations in interfaces:
+Put ABI declarations in interfaces:
 
 - Structs.
 - Enums.
@@ -78,12 +79,12 @@ Always put ABI declarations in interfaces:
 - Events.
 - External and public function signatures.
 
-Implementation contracts should import and implement interfaces instead of redeclaring ABI declarations locally. Local
-implementation-only structs are allowed only for internal execution caches that are not part of the ABI, event/error
-surface, or integration contract.
+Implementation contracts should import and implement interfaces instead of redeclaring ABI declarations locally.
+Callback contracts are not exempt from this rule: callback calldata structs, callback/admin events, custom errors, and
+external/public function signatures belong in a dedicated interface under `src/interfaces/`.
 
-Callback contracts are not exempt from this rule. Put callback calldata structs, callback/admin events, custom errors,
-and external/public function signatures in a dedicated interface under `src/interfaces/`.
+Local implementation-only structs are allowed only for internal execution caches that are not part of the ABI,
+event/error surface, or integration contract.
 
 ## Contract Structure
 
@@ -92,27 +93,37 @@ Prefer this order in implementation contracts:
 1. SPDX and pragma.
 2. Imports.
 3. Contract-level NatSpec.
-4. Constants and immutables.
-5. Storage.
-6. Constructor or initializer.
-7. External and public state-changing functions.
-8. External and public view functions.
-9. Internal and private functions.
+4. Constants, with NatSpec for non-obvious typed hashes, type strings, domain separators, scales, and protocol
+   constants.
+5. Immutables.
+6. Storage.
+7. Constructor or initializer.
+8. External and public state-changing functions.
+9. Internal and private functions used by the state-changing flow.
+10. External and public view or pure getters/helpers.
 
 Callback entry points that perform transfers, approvals, swaps, or protocol calls are state-changing functions and
-belong before public view getters.
+belong before internal helpers and public view or pure getters. Public helper functions that expose derived signing,
+hashing, quote, or integration data may live in the getter/helper section after the internal helpers they reuse.
 
 For upgradeable or storage-split contracts, keep shared storage in a dedicated abstract storage contract. Preserve
 storage layout carefully and document any layout change.
 
 ## NatSpec
 
-Use NatSpec on contracts, interfaces, events, errors with non-obvious parameters, and every external or public function.
+Use NatSpec on contracts, interfaces, constants with non-obvious protocol meaning, events, errors, and every function.
 
 - Use `@title`, `@author`, `@notice`, and `@dev` on contracts when useful.
 - Use `@notice` for user-facing behavior.
 - Use `@dev` for security assumptions, call ordering, and integration constraints.
-- Use `@param` and `@return` for external and public functions.
+- Use `@param` and `@return` for external, public, internal, and private functions whenever they accept parameters or
+  return values.
+- Use one `/// @notice` per borrower-supplied struct field in interfaces.
+- Use one-line `/// @notice` comments for custom errors.
+- Use `/// @dev` for implementation constants and internal state variables.
+- Do not add trailing punctuation to `@title` or `@author` lines.
+- Document ignored callback parameters when the external signature requires them. Name the parameters and consume them
+  as no-ops in the function body instead of leaving the ABI meaning unclear.
 
 Keep NatSpec factual. Do not describe implementation details that can drift unless they are part of the external
 contract.
@@ -124,6 +135,8 @@ contract.
 - Emit events for admin configuration changes and user-visible state transitions.
 - Put checks before state changes unless a deliberate checks-effects-interactions pattern requires state first.
 - Put state updates before external calls unless there is documented rationale, mitigation, and test coverage.
+- Prefer explicit internal authorization checks, such as `_checkOwner()`, over access-control modifiers when the local
+  contract style uses explicit checks.
 
 ## Security Baseline
 
@@ -139,8 +152,9 @@ Always consider:
 - Direct `msg.sender` checks versus delegated or meta-transaction caller semantics.
 - Paused state, emergency paths, and privileged role abuse.
 
-Use `SafeERC20` for token transfers unless a dependency forces a different pattern. Avoid infinite approvals unless they
-are justified and bounded by trusted integration assumptions.
+Use `SafeERC20` for token transfers unless a dependency forces a different pattern. Call `SafeERC20` functions
+explicitly; do not use `using SafeERC20 for IERC20`. Avoid infinite approvals unless they are justified and bounded by
+trusted integration assumptions.
 
 ## Tests
 
