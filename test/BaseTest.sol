@@ -212,7 +212,6 @@ abstract contract BaseTest is Test, DeployPermit2 {
 
     function _signMarginAuthorization(
         IMidnightLeverageCallback.OpenParams memory _params,
-        uint256 _permittedAmount,
         uint256 _nonce
     )
         internal

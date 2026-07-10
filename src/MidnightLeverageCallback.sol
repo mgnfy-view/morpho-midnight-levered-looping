@@ -3,13 +3,13 @@ pragma solidity ^0.8.20;
 
 import { IERC20 } from "@openzeppelin-contracts-5.3.0/token/ERC20/IERC20.sol";
 import { IMidnight } from "morpho-midnight-1.0.0/src/interfaces/IMidnight.sol";
+import { ISignatureTransfer } from "permit2-1.0.0/src/interfaces/ISignatureTransfer.sol";
 import { IMidnightLeverageCallback } from "src/interfaces/IMidnightLeverageCallback.sol";
 
 import { Ownable } from "@openzeppelin-contracts-5.3.0/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin-contracts-5.3.0/access/Ownable2Step.sol";
 import { SafeERC20 } from "@openzeppelin-contracts-5.3.0/token/ERC20/utils/SafeERC20.sol";
 import { ReentrancyGuard } from "@openzeppelin-contracts-5.3.0/utils/ReentrancyGuard.sol";
-import { ISignatureTransfer } from "permit2-1.0.0/src/interfaces/ISignatureTransfer.sol";
 
 import { Market } from "morpho-midnight-1.0.0/src/interfaces/IMidnight.sol";
 import { CALLBACK_SUCCESS } from "morpho-midnight-1.0.0/src/libraries/ConstantsLib.sol";

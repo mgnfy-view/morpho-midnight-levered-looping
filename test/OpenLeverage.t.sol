@@ -163,7 +163,7 @@ contract OpenLeverageTest is BaseTest {
         s_loanToken.approve(address(s_callback), 0);
         IMidnightLeverageCallback.OpenParams memory params =
             _openParams(marginAmount, collateralIndex, collateralAmount, collateralAmount, collateralAmount);
-        params.auth = _signMarginAuthorization(params, marginAmount, permitNonce);
+        params.auth = _signMarginAuthorization(params, permitNonce);
         vm.prank(s_borrower);
         s_midnight.take(
             offer, hex"", borrowUnits, s_borrower, address(s_callback), address(s_callback), abi.encode(params)
