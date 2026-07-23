@@ -54,6 +54,7 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
         if (address(_midnight) == address(0) || address(_permit2) == address(0)) {
             revert MidnightLeverageCallback__AddressZero();
         }
+
         i_midnight = _midnight;
         i_permit2 = _permit2;
     }
@@ -64,7 +65,9 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
     function setIsAllowedSwapRouter(address _router, bool _allowed) external {
         _checkOwner();
         if (_router == address(0)) revert MidnightLeverageCallback__AddressZero();
+
         s_isAllowedSwapRouter[_router] = _allowed;
+
         emit SwapRouterAllowed(_router, _allowed);
     }
 
@@ -313,9 +316,11 @@ contract MidnightLeverageCallback is IMidnightLeverageCallback, Ownable2Step, Re
     {
         uint256 balanceBefore = IERC20(_tokenOut).balanceOf(address(this));
         SafeERC20.forceApprove(IERC20(_tokenIn), _router, _amountIn);
+
         (bool success,) = _router.call(_swapCalldata);
         if (!success) revert MidnightLeverageCallback__SwapFailed();
         SafeERC20.forceApprove(IERC20(_tokenIn), _router, 0);
+
         uint256 amountOut = IERC20(_tokenOut).balanceOf(address(this)) - balanceBefore;
         if (amountOut < _minAmountOut) revert MidnightLeverageCallback__SlippageExceeded();
 

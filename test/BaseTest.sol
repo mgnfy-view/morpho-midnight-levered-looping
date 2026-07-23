@@ -125,6 +125,7 @@ abstract contract BaseTest is Test, DeployPermit2 {
         for (uint256 i = 0; i < s_market.collateralParams.length; i++) {
             if (s_market.collateralParams[i].token == _token) return i;
         }
+
         revert BaseTest__CollateralNotFound();
     }
 
@@ -139,6 +140,7 @@ abstract contract BaseTest is Test, DeployPermit2 {
         offer.maxUnits = UtilsLib.toUint128(_maxUnits);
         offer.continuousFeeCap = s_midnight.continuousFee(s_id);
         offer.tick = ONE_TO_ONE_PRICE_TICK;
+
         return offer;
     }
 
@@ -207,6 +209,7 @@ abstract contract BaseTest is Test, DeployPermit2 {
             minCollateralAssets: _minCollateralAssets,
             auth: _emptyPullAuthorization()
         });
+
         return _params;
     }
 
@@ -223,6 +226,7 @@ abstract contract BaseTest is Test, DeployPermit2 {
         address collateralToken = s_market.collateralParams[_params.collateralIndex].token;
         (ISignatureTransfer.PermitTransferFrom memory _permit, bytes32 _witness, string memory _witnessTypeString) =
             s_callback.buildMarginPermitData(address(s_loanToken), s_id, collateralToken, _params);
+
         return _signPullAuthorization(_permit, _witness, _witnessTypeString);
     }
 
@@ -270,6 +274,7 @@ abstract contract BaseTest is Test, DeployPermit2 {
             maxRepayShortfall: _maxRepayShortfall,
             auth: _emptyPullAuthorization()
         });
+
         return _params;
     }
 
@@ -288,6 +293,7 @@ abstract contract BaseTest is Test, DeployPermit2 {
         (ISignatureTransfer.PermitTransferFrom memory _permit, bytes32 _witness, string memory _witnessTypeString) =
             s_callback.buildRepayPermitData(address(s_loanToken), s_id, collateralToken, _params);
         assertEq(_permit.permitted.amount, _permittedAmount);
+
         return _signPullAuthorization(_permit, _witness, _witnessTypeString);
     }
 
